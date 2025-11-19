@@ -36,6 +36,7 @@ wavearray = np.array([0.430, 0.890])  # Kepler bandpass in micron
 planetarymasssini = 11.4  # Earth mass, from RV fit
 planetarymasssini = planetarymasssini * 0.00314558  # conversion into Jupiter mass
 inclination = 17  # degrees
+# inclination = None
 model_name = f'model_grid_phase_offset'
 effectivetemperature = 6358
 stellarmass = 1.390
@@ -50,9 +51,10 @@ if fit_gravitational_effects is True and add_gravitational_effects_model is True
     print("We can't fit and fix the gravitational effects at the same time. Turn one of them to False.")
     sys.exit()
 
-references_path = '/Users/adyrek/PycharmProjects/punto/references'
-model_grid_folder = '/Users/adyrek/PycharmProjects/punto/results_grid/model_grid/phase_offset'
-main_result_folder= '/Users/adyrek/PycharmProjects/punto/results_grid/ultranest/freefit'
+main_path = '/Users/adyrek/PycharmProjects/punto/'
+references_path = os.path.join(main_path, 'references')
+model_grid_folder = os.path.join(main_path, 'results_grid/model_grid/phase_offset')
+main_result_folder= os.path.join(main_path, 'results_grid/ultranest/fit_fixed_i')
 if fit_gravitational_effects is True:
     result_folder = os.path.join(main_result_folder, 'phase_offset/fitted_grav_params')
 else:
@@ -85,18 +87,7 @@ with open(os.path.join(model_grid_folder, f"{model_name}.json"), "r") as f:
 print("Author:", metadata["author"])
 print("Date created:", metadata["date_created"])
 print("Fixed parameters:", metadata["fixed_parameters"])
-print("Param1 name:", metadata["planetaryradius"]["name"])
-print("Param1 unit:", metadata["planetaryradius"]["unit"])
-print("Param2 name:", metadata["albedo"]["name"])
-print("Param2 unit:", metadata["albedo"]["unit"])
-print("Param3 name:", metadata["redistribution"]["name"])
-print("Param3 unit:", metadata["redistribution"]["unit"])
-print("Param4 name:", metadata["inclination"]["name"])
-print("Param4 unit:", metadata["inclination"]["unit"])
-print("Param5 name:", metadata["albedo_min"]["name"])
-print("Param5 unit:", metadata["albedo_min"]["unit"])
-print("Param6 name:", metadata["cloud_offset"]["name"])
-print("Param6 unit:", metadata["cloud_offset"]["unit"])
+
 
 if plot_grid is True:
     print("'plot_grid' is True: plotting the grid.")
@@ -173,9 +164,36 @@ if plot_grid is True:
 else:
     pass
 
+print("\nModel grid - inclination handling")
+
+if inclination is None:
+    print("Inclination will be fitted.")
+    grid_axes = (planetaryradius, albedo, redistribution, inclination_grid,
+                 albedo_min, cloud_offset)
+    interpolator_flux = normalized_flux
+    fixed_incl_val = None
+
+else:
+    nearest_idx = np.nanargmin(np.abs(inclination_grid - inclination))
+    fixed_incl_val = float(inclination_grid[nearest_idx])
+    print(f"Requested inclination = {inclination:.2f} degrees -> "
+          f"nearest grid incl = {fixed_incl_val:.2f} degrees (index {nearest_idx})")
+
+    # slice away inclination axis
+    interpolator_flux = normalized_flux[:, :, :, nearest_idx, :, :, :]
+    grid_axes = (planetaryradius, albedo, redistribution, albedo_min, cloud_offset)
+
+model_interpolator = RegularGridInterpolator(
+    grid_axes, interpolator_flux, bounds_error=False, fill_value=None
+)
+
+print("Grid interpolator parameter axes:")
+for ax in grid_axes:
+    print("  -> axis length:", len(ax))
+
 
 # Open data
-input_file = '/Users/adyrek/Documents/STScI_fellowship/Punto/Kepler_long_cadence/9139163_lc_filtered.txt'
+input_file = os.path.join(references_path, '9139163_lc_filtered.txt')
 
 data = np.loadtxt(input_file)
 time_array = data[:, 0]
@@ -205,17 +223,31 @@ model_interpolator = RegularGridInterpolator((planetaryradius, albedo, redistrib
                                              bounds_error=False,
                                              fill_value=None)
 
+def compute_gravity_amplitudes(inc_deg):
+    alpha_ellip = -2.2e-4 * effectivetemperature + 2.6
+    alpha_beam  = -6e-4 * effectivetemperature + 7.2
+    inc_rad = np.deg2rad(inc_deg)
 
-alpha_ellip = -2.2 * (10 ** -4) * effectivetemperature + 2.6
-alpha_beam = -6 * (10 ** -4) * effectivetemperature + 7.2
-Aellip_fixed = 13 * alpha_ellip * np.sin(inclination * np.pi / 180) * (stellarradius ** 3) * \
-         (stellarmass ** (-2)) * (period ** (-2)) * planetarymasssini
-Abeam_fixed = 2.7 * alpha_beam * (period ** (-1 / 3)) * (stellarmass ** (-2 / 3)) * planetarymasssini
-print(f'Aellip is {Aellip_fixed} ppm.')
-print(f'Abeam is {Abeam_fixed} ppm.')
+    Aellip = 13 * alpha_ellip * np.sin(inc_rad) * stellarradius**3 * \
+             stellarmass**(-2) * period**(-2) * planetarymasssini
+    Abeam  = 2.7 * alpha_beam * period**(-1/3) * stellarmass**(-2/3) * planetarymasssini
+    return Aellip, Abeam
+
+# If inclination is fixed, compute once
+if inclination is not None:
+    Aellip_fixed, Abeam_fixed = compute_gravity_amplitudes(fixed_incl_val)
+else:
+    Aellip_fixed, Abeam_fixed = None, None
+
+print("\nGravitational effects")
+if inclination is not None:
+    print(f"Using fixed Aellip={Aellip_fixed:.3f}, Abeam={Abeam_fixed:.3f}")
+else:
+    print("Inclination is free -> Aellip/Abeam will depend on sampled inclination.")
+
 
 def make_model_flux_function(model_interpolator, phase_model, phase_obs, fit_gravitational_effects=False,
-                             add_gravitational_effects_model=False, precomputed_Abeam=None, precomputed_Aellip=None):
+                             add_gravitational_effects_model=False, fixed_incl_val=None):
 
     # Precompute sinusoidal terms (since phase_obs is fixed)
     cos_term = np.cos(4 * np.pi * phase_obs)
@@ -230,6 +262,12 @@ def make_model_flux_function(model_interpolator, phase_model, phase_obs, fit_gra
         else:
             offset = p[-1]
             model_params = p[:-1]
+
+        if (inclination is None) and add_gravitational_effects_model:
+            inc_val = model_params[3]  # because inclination is axis #4 for free case
+            Aellip_calc, Abeam_calc = compute_gravity_amplitudes(inc_val)
+        else:
+            Aellip_calc, Abeam_calc = Aellip_fixed, Abeam_fixed
 
         #  Interpolate base model flux
         pts = np.atleast_2d(model_params)  # shape (1, ndim)
@@ -248,25 +286,12 @@ def make_model_flux_function(model_interpolator, phase_model, phase_obs, fit_gra
 
         elif add_gravitational_effects_model:
             # use precomputed fixed amplitudes
-            flux -= precomputed_Aellip * cos_term
-            flux += precomputed_Abeam * sin_term
+            flux -= Aellip_calc * cos_term
+            flux += Abeam_calc * sin_term
 
         return flux
 
     return get_model_flux
-
-
-ultranest_output = os.path.join(main_result_folder, f'ultranestoutput/i{inclination}')
-os.makedirs(ultranest_output, exist_ok=True)
-
-# Print Aellip and Abeam
-alpha_ellip = -2.2 * (10 ** -4) * effectivetemperature + 2.6
-alpha_beam = -6 * (10 ** -4) * effectivetemperature + 7.2
-Aellip_fixed = 13 * alpha_ellip * np.sin(inclination * np.pi / 180) * (stellarradius ** 3) * \
-         (stellarmass ** (-2)) * (period ** (-2)) * planetarymasssini
-Abeam_fixed = 2.7 * alpha_beam * (period ** (-1 / 3)) * (stellarmass ** (-2 / 3)) * planetarymasssini
-print(f'Aellip is {Aellip_fixed} ppm.')
-print(f'Abeam is {Abeam_fixed} ppm.')
 
 get_model_flux = make_model_flux_function(
         model_interpolator,
@@ -274,48 +299,67 @@ get_model_flux = make_model_flux_function(
         phase_obs,
         fit_gravitational_effects=fit_gravitational_effects,
         add_gravitational_effects_model=add_gravitational_effects_model,
-        precomputed_Abeam=Abeam_fixed,
-        precomputed_Aellip=Aellip_fixed,
+        fixed_incl_val=fixed_incl_val
     )
+
+ultranest_output = os.path.join(main_result_folder, f'ultranestoutput/i{inclination}')
+os.makedirs(ultranest_output, exist_ok=True)
 
 if perform_fit is True:
     print("'perform_fit' is True: performing fit using UltraNest Nested Sampling.")
 
-    # bounds
-    if fit_gravitational_effects is False:
-        param_names = ["Planetary Radius", "Albedo", "Redistribution", "Albedo min", "Cloud offset", "Offset"]
-        param_bounds = [
-            (planetaryradius.min(), planetaryradius.max()),
-            (albedo.min(), albedo.max()),
-            (redistribution.min(), redistribution.max()),
-            (albedo_min.min(), albedo_min.max()),
-            (cloud_offset.min(), cloud_offset.max()),
-            (-5 * np.mean(yerr), 5 * np.mean(yerr))]
-    else:
-        param_names = ["Planetary Radius", "Albedo", "Redistribution", "Albedo min",
-                       "Cloud offset", "Abeam", "Aellip", "Offset"]
-        param_bounds = [
-            (planetaryradius.min(), planetaryradius.max()),
-            (albedo.min(), albedo.max()),
-            (redistribution.min(), redistribution.max()),
-            (albedo_min.min(), albedo_min.max()),
-            (cloud_offset.min(), cloud_offset.max()),
-            (1e-2, +500),
-            (-500, + 500),
-            (-5 * np.mean(yerr), 5 * np.mean(yerr))]
+    abel_map = {
+        'planetaryradius': "Planetary Radius",
+        'albedo': "Albedo",
+        'redistribution': "Redistribution",
+        'inclination': "Inclination",
+        'albedo_min': "Albedo min",
+        'cloud_offset': "Cloud offset",
+    }
 
+    param_names = []
+    param_bounds = []
+
+    for ax in grid_axes:
+        if np.array_equal(ax, planetaryradius):
+            param_names.append("Planetary Radius")
+            param_bounds.append((planetaryradius.min(), planetaryradius.max()))
+        elif np.array_equal(ax, albedo):
+            param_names.append("Albedo")
+            param_bounds.append((albedo.min(), albedo.max()))
+        elif np.array_equal(ax, redistribution):
+            param_names.append("Redistribution")
+            param_bounds.append((redistribution.min(), redistribution.max()))
+        elif np.array_equal(ax, inclination_grid):
+            param_names.append("Inclination")
+            param_bounds.append((inclination_grid.min(), inclination_grid.max()))
+        elif np.array_equal(ax, albedo_min):
+            param_names.append("Albedo min")
+            param_bounds.append((albedo_min.min(), albedo_min.max()))
+        elif np.array_equal(ax, cloud_offset):
+            param_names.append("Cloud offset")
+            param_bounds.append((cloud_offset.min(), cloud_offset.max()))
+        else:
+            raise RuntimeError("Unrecognized parameter axis.")
+
+    # adding flux offset
+    param_names.append("Offset")
+    param_bounds.append((-5 * np.mean(yerr), 5 * np.mean(yerr)))
+
+    # gravitational effect params (if fitted)
+    if fit_gravitational_effects:
+        param_names = param_names[:-1] + ["Abeam", "Aellip", "Offset"]
+        param_bounds = param_bounds[:-1] + [(1e-2, 500), (-500, 500),
+                                            (-5 * np.mean(yerr), 5 * np.mean(yerr))]
 
     def make_prior_transform(param_names, param_bounds):
         def prior_transform(unit_cube):
             params = []
-            for i, (u, (low, high)) in enumerate(zip(unit_cube, param_bounds)):
-                if param_names[i] in ["Abeam", "Aellip"]:
+            for i, (u, (low, high), name) in enumerate(zip(unit_cube, param_bounds, param_names)):
+                if name[i] in ["Abeam", "Aellip"]:
                     # Log-scale these to improve sampling stability
                     val = 10 ** (np.log10(max(low, 1e-6)) + u[i] * (np.log10(max(high, 1e-6))
                                                                     - np.log10(max(low, 1e-6))))
-
-                elif param_names[i] == "Albedo":
-                    val = low + u * (high - low)
                 else:
                     val = low + u * (high - low)
                 val = np.clip(val, low, high)
