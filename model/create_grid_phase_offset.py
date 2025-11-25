@@ -48,6 +48,7 @@ Kepler = True
 TESS = False
 plot_grid = True
 create_grid = True
+use_uniform_albedo = True
 
 #  inputs
 targetname = '9139163'
@@ -81,7 +82,10 @@ if create_grid:
     albedo = np.linspace(0.5, 0.99, 2)
     redistribution = np.linspace(0.05, 0.1, 2) # 0.99
     inclination = np.linspace(55, 62, 2)  #1
-    albedo_min = np.linspace(0.1, 0.5, 3)
+    if use_uniform_albedo:
+        albedo_min = albedo.copy()
+    else:
+        albedo_min = np.linspace(0.1, 0.5, 3)
     cloud_offset = np.linspace(30, 120, 2)  # degrees
 
 
@@ -142,7 +146,7 @@ if create_grid:
         "redistribution": {"name": "redistribution", "unit": "dimensionless"},
         "inclination": {"name": "inclination", "unit": "degrees"},
         "albedo_min": {"name": "albedo_min", "unit": "dimensionless"},
-        "cloud_offset": {"name": "cloud_offset", "unit": "dimensionless"},
+        "cloud_offset": {"name": "cloud_offset", "unit": "degrees"},
         "flux": "Normalized flux as a function of the phase angle",
         "author": "A. Dyrek",
         "date_created": datetime.now().isoformat(),
