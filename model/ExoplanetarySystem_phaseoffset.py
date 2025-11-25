@@ -627,10 +627,6 @@ class ExoplanetarySystem_phaseoffset:
 
         contrast = self.compute_contrast()
 
-        # plots.plot_temperature_map(self)
-        # contrast_for_plotting = contrast[np.newaxis, np.newaxis, np.newaxis, :]
-        # plots.plot_photometry_model(self, contrast_for_plotting, [self.planetaryradius],
-                                    # [self.albedo], [self.redistribution])
         return contrast
 
 

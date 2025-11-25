@@ -3,9 +3,6 @@ import os
 import astropy.constants as c
 import pandas as pd
 
-results_folder = '/Users/ah258874/PycharmProjects/punto/results_model'
-
-
 def find_nearest(value, array):
     print('TBD')
     wave_value = value
@@ -16,12 +13,6 @@ def find_nearest(value, array):
 
 def convert_deg_to_radian(x):
     return x * (np.pi/180)
-
-
-def save_model(system):
-    np.savetxt(os.path.join(results_folder, f'photometrymodel_{(system.planetaryradius / c.R_jup).value}'
-                                            f'Rj_Ab{system.albedo}_r_{system.redistribution}.txt'),
-               np.transpose(np.array([system.phase * 180 / np.pi, system.contrast_ppm])))
 
 
 def compute_edges(arr):
