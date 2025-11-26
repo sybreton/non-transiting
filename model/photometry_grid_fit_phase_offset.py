@@ -12,6 +12,7 @@ from ultranest.stepsampler import SliceSampler, generate_region_oriented_directi
 import sys
 import utils
 from pathlib import Path
+from scipy.stats import norm
 
 import cmocean as cm
 
@@ -38,7 +39,7 @@ planetarymasssini = 11.4  # Earth mass, from RV fit
 planetarymasssini = planetarymasssini * 0.00314558  # conversion into Jupiter mass
 inclination = 17  # degrees
 # inclination = None
-model_name = f'model_grid_phase_offset'
+model_name = f'model_grid_phase_offset_uniform_albedo'
 effectivetemperature = 6358
 stellarmass = 1.390
 stellarradius = 1.558
@@ -53,9 +54,9 @@ if fit_gravitational_effects is True and add_gravitational_effects_model is True
     sys.exit()
 
 ROOT = Path(__file__).resolve().parent
-references_path = str(ROOT / "references")
-model_grid_folder =  str(ROOT / "results_grid"/ "model_grid" / "phase_offset_smaller")
-main_result_folder= str(ROOT / "results_grid"/ "ultranest" / "fit_fixed_i")
+references_path = str(ROOT.parent / "references")
+model_grid_folder =  str(ROOT.parent / "results_grid"/ "model_grid" / "phase_offset_smaller")
+main_result_folder= str(ROOT.parent / "results_grid"/ "ultranest" / "fit_fixed_i")
 if fit_gravitational_effects is True:
     result_folder = os.path.join(main_result_folder, 'phase_offset/fitted_grav_params')
 else:
@@ -80,6 +81,16 @@ cloud_offset = model_grid["cloud_offset"]
 cloud_offset = np.asarray(cloud_offset)
 normalized_flux = model_grid["flux"]
 
+if np.allclose(albedo_min, albedo):
+    # redundant axis: use albedo only
+    use_uniform_albedo = True
+    print("Detected uniform albedo: albedo_min equals albedo. Will fit only 'Albedo' (albedo_min will track it).")
+else:
+    use_uniform_albedo = False
+    print("albedo_min differs from albedo: both 'Albedo' and "
+                                     "'Albedo min' will be available as fit parameters.")
+
+
 # load metadata
 with open(os.path.join(model_grid_folder, f"{model_name}.json"), "r") as f:
     metadata = json.load(f)
@@ -94,7 +105,7 @@ if plot_grid is True:
     print("'plot_grid' is True: plotting the grid.")
 
     def plot_photometry_model(normalized_flux, planetaryradius, albedo, redistribution,
-                              inclination, albedo_min, cloud_offset):
+                              inclination_grid, albedo_min, cloud_offset):
         fig, ax = plt.subplots(1, 1, figsize=(5, 4), dpi=100)
         for angle in [0, 90, 180, 270, 360]:
             ax.axvline(angle, -10, 70, color='lightgrey', linestyle='--', linewidth=0.7, zorder=1)
@@ -243,35 +254,68 @@ else:
 def make_model_flux_function(model_interpolator, phase_model, phase_obs, fit_gravitational_effects=False,
                              add_gravitational_effects_model=False, fixed_incl_val=None):
 
-    # Precompute sinusoidal terms (since phase_obs is fixed)
-    cos_term = np.cos(4 * np.pi * phase_obs)
-    sin_term = np.sin(2 * np.pi * phase_obs)
-
     def get_model_flux(p):
+        fitted_dict = dict(zip(param_names, p))
 
         if fit_gravitational_effects:
-            offset = p[-1]
-            Aellip, Abeam = p[-2], p[-3]
-            model_params = p[:-3]
+            Aellip = fitted_dict.get("Aellip", None)
+            Abeam = fitted_dict.get("Abeam", None)
+            amplitude_offset = fitted_dict.get("Amplitude Offset", 0.0)
         else:
-            offset = p[-1]
-            model_params = p[:-1]
+            amplitude_offset = fitted_dict.get("Amplitude Offset", 0.0)
+            Aellip = None
+            Abeam = None
 
-        if (inclination is None) and add_gravitational_effects_model:
-            inc_val = model_params[3]  # because inclination is axis #4 for free case
-            Aellip_calc, Abeam_calc = compute_gravity_amplitudes(inc_val)
+        if use_uniform_albedo:
+            phase_offset_days = fitted_dict.get("Phase Offset (days)", 0.0)
+            phase_shift_deg = 360.0 * (phase_offset_days / period)
+            phase_obs_local = (phase_obs + phase_shift_deg) % 360.0
         else:
-            Aellip_calc, Abeam_calc = Aellip_fixed, Abeam_fixed
+            phase_obs_local = phase_obs
+
+        # Precompute sinusoidal terms (since phase_obs is fixed)
+        cos_term = np.cos(4 * np.pi * phase_obs_local / 360)
+        sin_term = np.sin(2 * np.pi * phase_obs_local / 360.0)
+
+
+        full_params = []
+        for ax in grid_axes:
+            if np.array_equal(ax, planetaryradius):
+                full_params.append(fitted_dict["Planetary Radius"])
+            elif np.array_equal(ax, albedo):
+                full_params.append(fitted_dict["Albedo"])
+            elif np.array_equal(ax, redistribution):
+                full_params.append(fitted_dict["Redistribution"])
+            elif np.array_equal(ax, inclination_grid):
+                if "Inclination" in fitted_dict:
+                    full_params.append(fitted_dict["Inclination"])
+                else:
+                    full_params.append(fixed_incl_val)
+            elif np.array_equal(ax, albedo_min):
+                if use_uniform_albedo:
+                    full_params.append(fitted_dict["Albedo"])
+                else:
+                    full_params.append(fitted_dict["Albedo min"])
+            elif np.array_equal(ax, cloud_offset):
+                if use_uniform_albedo:
+                    continue
+                else:
+                    full_params.append(fitted_dict["Cloud offset"])
+            else:
+                raise RuntimeError("Unrecognized axis when building full_params")
+
+        if use_uniform_albedo:
+            full_params.append(fitted_dict.get("Phase Offset (days)", 0.0))
 
         #  Interpolate base model flux
-        pts = np.atleast_2d(model_params)  # shape (1, ndim)
+        pts = np.atleast_2d(full_params)  # shape (1, ndim)
         flux_grid_res = model_interpolator(pts)  # likely shape (1, n_phase)
         flux_grid = np.squeeze(flux_grid_res)  # shape (n_phase,) guaranteed
 
         flux_interp = interp1d(phase_model, flux_grid, kind='linear', bounds_error=False, fill_value="extrapolate")
-        flux_interp_squeeze = flux_interp(phase_obs)
+        flux_interp_squeeze = flux_interp(phase_obs_local)
 
-        flux = flux_interp_squeeze + offset
+        flux = flux_interp_squeeze + amplitude_offset
 
         # --- Add gravitational effects if needed ---
         if fit_gravitational_effects:
@@ -279,7 +323,11 @@ def make_model_flux_function(model_interpolator, phase_model, phase_obs, fit_gra
             flux += Abeam * sin_term
 
         elif add_gravitational_effects_model:
-            # use precomputed fixed amplitudes
+            if "Inclination" in fitted_dict:
+                inc_val = fitted_dict["Inclination"]
+            else:
+                inc_val = fixed_incl_val
+            Aellip_calc, Abeam_calc = compute_gravity_amplitudes(inc_val)
             flux -= Aellip_calc * cos_term
             flux += Abeam_calc * sin_term
 
@@ -328,6 +376,9 @@ if perform_fit is True:
             param_names.append("Inclination")
             param_bounds.append((inclination_grid.min(), inclination_grid.max()))
         elif np.array_equal(ax, albedo_min):
+            if use_uniform_albedo:
+                print("Skipping 'Albedo min' as a free parameter because it equals 'Albedo'.")
+                continue
             param_names.append("Albedo min")
             param_bounds.append((albedo_min.min(), albedo_min.max()))
         elif np.array_equal(ax, cloud_offset):
@@ -337,23 +388,34 @@ if perform_fit is True:
             raise RuntimeError("Unrecognized parameter axis.")
 
     # adding flux offset
-    param_names.append("Offset")
+    param_names.append("Amplitude Offset")
     param_bounds.append((-5 * np.mean(yerr), 5 * np.mean(yerr)))
+
+    # adding phase offset
+    if use_uniform_albedo:
+        param_names.append("Phase Offset (days)")
+        param_bounds.append((-0.1, 0.1))
 
     # gravitational effect params (if fitted)
     if fit_gravitational_effects:
-        param_names = param_names[:-1] + ["Abeam", "Aellip", "Offset"]
+        param_names = param_names[:-1] + ["Abeam", "Aellip", "Amplitude Offset"]
         param_bounds = param_bounds[:-1] + [(1e-2, 500), (-500, 500),
                                             (-5 * np.mean(yerr), 5 * np.mean(yerr))]
 
     def make_prior_transform(param_names, param_bounds):
         def prior_transform(unit_cube):
             params = []
-            for i, (u, (low, high), name) in enumerate(zip(unit_cube, param_bounds, param_names)):
-                if name[i] in ["Abeam", "Aellip"]:
+            for i, u  in enumerate(unit_cube):
+                low, high = param_bounds[i]
+                name = param_names[i]
+                if name in ["Abeam", "Aellip"]:
                     # Log-scale these to improve sampling stability
-                    val = 10 ** (np.log10(max(low, 1e-6)) + u[i] * (np.log10(max(high, 1e-6))
-                                                                    - np.log10(max(low, 1e-6))))
+                    val = 10 ** (np.log10(max(low, 1e-8)) + u[i] * (np.log10(max(high, 1e-8))
+                                                                    - np.log10(max(low, 1e-8))))
+                elif name == "Phase Offset (days)":
+                    # Gaussian prior centered on 0 with sigma=0.018 days
+                    val = norm.ppf(u, loc=0.0, scale=0.018)
+                    val = np.clip(val, low, high)
                 else:
                     val = low + u * (high - low)
                 val = np.clip(val, low, high)
@@ -413,6 +475,7 @@ else:
     std = fit_results["std"]
     best_model = fit_results["best_model"]
     param_names = fit_results["param_names"]
+    samples = fit_results["samples"]
 
     print("\nBest-fit parameters:")
     print("\nPosterior mean ± std:")
