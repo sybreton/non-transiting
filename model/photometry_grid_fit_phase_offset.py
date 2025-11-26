@@ -383,6 +383,8 @@ if perform_fit is True:
             param_names.append("Albedo min")
             param_bounds.append((albedo_min.min(), albedo_min.max()))
         elif np.array_equal(ax, cloud_offset):
+            if use_uniform_albedo:
+                continue
             param_names.append("Cloud offset")
             param_bounds.append((cloud_offset.min(), cloud_offset.max()))
         else:
