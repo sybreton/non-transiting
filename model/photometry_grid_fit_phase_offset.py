@@ -39,6 +39,7 @@ planetarymasssini = planetarymasssini * 0.00314558  # conversion into Jupiter ma
 inclination = 17  # degrees
 # inclination = None
 model_name = f'model_grid_phase_offset_uniform_albedo'
+fit_name = f"phase_offset_uniform_albedo"
 effectivetemperature = 6358
 stellarmass = 1.390
 stellarradius = 1.558
@@ -56,13 +57,14 @@ ROOT = Path(__file__).resolve().parent
 references_path = str(ROOT.parent / "references")
 model_grid_folder =  str(ROOT.parent / "results_grid"/ "model_grid" / "phase_offset_smaller")
 main_result_folder= str(ROOT.parent / "results_grid"/ "ultranest" / "fit_fixed_i")
+
 if fit_gravitational_effects is True:
-    result_folder = os.path.join(main_result_folder, 'phase_offset/fitted_grav_params')
+    result_folder = os.path.join(main_result_folder, str(fit_name / 'fitted_grav_params'))
 else:
     if add_gravitational_effects_model is True:
-        result_folder = os.path.join(main_result_folder, 'phase_offset/fixed_grav_params')
+        result_folder = os.path.join(main_result_folder, str(fit_name / 'fixed_grav_params'))
     else:
-        result_folder = os.path.join(main_result_folder, 'phase_offset')
+        result_folder = os.path.join(main_result_folder, fit_name)
 
 
 print("Reading the model grid.")
