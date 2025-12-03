@@ -1,22 +1,19 @@
 import numpy as  np
-import os
+import sys, os, json, corner
 from scipy.interpolate import RegularGridInterpolator
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 import matplotlib.lines as lines
-import json
-import corner
 import ultranest
-from ultranest.stepsampler import SliceSampler, generate_region_oriented_direction
-import sys
-import utils
+from ultranest.stepsampler import (SliceSampler, 
+                                   generate_region_oriented_direction)
+import non_transiting.model 
 from pathlib import Path
 from scipy.stats import norm
-
 import cmocean as cm
-
 from matplotlib import rc
+
 rc('image', origin='lower')
 rc('font', **{'family': 'serif', 'serif': ['Times New Roman'], 'size': 16})
 rc('text', usetex=False)
@@ -235,7 +232,7 @@ yerr = np.repeat(np.asarray(target['noise_jenkins'])[0], repetitions)
 #  yerr = 1
 
 # Phase-fold
-foldx, foldy = utils.phase_fold(time_array, y, period, ref_time)
+foldx, foldy = non_transiting.model.phase_fold(time_array, y, period, ref_time)
 
 # modify observation phase array: foldx to get it in phase between 0-360
 phase_obs = ((foldx + 0.5 * period) / period) * 360
@@ -264,8 +261,12 @@ else:
     print("Inclination is free -> Aellip/Abeam will depend on sampled inclination.")
 
 
-def make_model_flux_function(model_interpolator, phase_model, phase_obs, fit_gravitational_effects=False,
-                             add_gravitational_effects_model=False, fixed_incl_val=None):
+def make_model_flux_function(model_interpolator, 
+                             phase_model, 
+                             phase_obs, 
+                             fit_gravitational_effects=False,
+                             add_gravitational_effects_model=False, 
+                             fixed_incl_val=None):
 
     def get_model_flux(p):
         fitted_dict = dict(zip(param_names, p))
@@ -469,10 +470,10 @@ plt.show()
 
 resi = best_model - foldy
 binsize = 50
-binned_residuals, res_err = utils.bin_data(resi, binsize, err=None)
-binned_time, time_err = utils.bin_data(phase_obs, binsize, err=None)
-binned_flux, binned_err = utils.bin_data(foldy, binsize, err=yerr)
-bin_time = utils.compute_binning_time(time_array, binsize)
+binned_residuals, res_err = non_transiting.model.bin_data(resi, binsize, err=None)
+binned_time, time_err = non_transiting.model.bin_data(phase_obs, binsize, err=None)
+binned_flux, binned_err = non_transiting.model.bin_data(foldy, binsize, err=yerr)
+bin_time = non_transiting.model.compute_binning_time(time_array, binsize)
 
 fig, ax = plt.subplots(2, 1, figsize=(7, 6), gridspec_kw={'height_ratios': [3, 1]}, sharex=True, dpi=100)
 ax[0].plot(phase_obs / 360, best_model, color=colors_matter[3], linewidth=1.3, zorder=3, alpha=1)

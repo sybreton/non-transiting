@@ -1,17 +1,13 @@
 import numpy as  np
-import os
+import os, sys, json
 import matplotlib.pyplot as plt
-import json
-import sys
-import ExoplanetarySystem_phaseoffset
+from non_transiting.model import ExoplanetarySystem_phaseoffset
 from joblib import Parallel, delayed
 from tqdm import tqdm
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-
 import cmocean as cm
-
 from matplotlib import rc
 
 rc('image', origin='lower')

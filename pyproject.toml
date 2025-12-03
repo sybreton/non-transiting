@@ -1,0 +1,29 @@
+[project]
+name = "non-transiting"
+version = "0.1"
+authors = [
+  { name="Achrène Dyrek", email="adyrek@stsci.edu" },
+  { name="Sylvain N. Breton", email="sylvain.breton@inaf.it" },
+]
+description = "Models for phase curves of non-transiting planets"
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = ['numpy', 
+                'matplotlib', 
+                'scipy', 
+                'astropy',
+                'cmocean']
+keywords = ["exoplanets", "phase curve"]
+license = {file = "LICENSE"}
+
+[build-system]
+requires = ["setuptools >= 40.8.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+

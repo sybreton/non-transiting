@@ -3,20 +3,68 @@ import astropy.constants as c
 import scipy.integrate as integrate
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
-import utils
-import sys
+import sys, os
 from mpl_toolkits.basemap import Basemap
 import cmocean as cm
 from matplotlib.patches import Circle
 from matplotlib.legend_handler import HandlerPatch
 from pathlib import Path
-import os
+import importlib.resources
+import non_transiting
 
-colors_matter = cm.cm.matter_r(np.linspace(0, 1, 10))
+def convert_deg_to_radian(x):
+    return x * (np.pi/180)
 
-test = False
-ROOT = Path(__file__).resolve().parent
-references_path = str(ROOT / "references")
+def compute_edges(arr):
+    """Compute cell edges from center values."""
+    midpoints = 0.5 * (arr[1:] + arr[:-1])
+    first = arr[0] - (midpoints[0] - arr[0])
+    last = arr[-1] + (arr[-1] - midpoints[-1])
+    return np.concatenate([[first], midpoints, [last]])
+
+
+def phase_fold(x, y, period, t0):
+    df = pd.DataFrame(np.column_stack((x, y)), columns=['t', 'f'])
+
+    # t0 = df['t'][0]
+    df['p'] = (df['t'] - t0) % period - 0.5 * period
+
+    df = df.sort_values(by='p').reset_index(drop=True)
+
+    df = df.groupby(df['p'].index).mean()
+
+    return df['p'], df['f']
+
+
+def bin_data(array, bin_size, err=None):
+    # Gets the remainder of the floor division between lightcurve size and bin size
+    division_remainder = np.mod(len(array), bin_size)
+
+    if err is not None:
+        tmp_err = err[division_remainder:]
+
+    # We  remove the points that could  not be  part of a full bin
+    tmp_data = array[division_remainder:]
+
+    binned_array = []
+    binned_err = []
+    length = int(len(tmp_data) / bin_size)
+
+    # We bin the data
+    for i in range(length):
+        tmp_bin = np.mean(tmp_data[(i * bin_size):((i + 1) * bin_size)])
+        binned_array.append(tmp_bin)
+        if err is not None:
+            tmp_binned_err = np.sqrt(np.sum(tmp_err[(i * bin_size):((i + 1) * bin_size)] ** 2) / (bin_size**2))
+            binned_err.append(tmp_binned_err)
+
+    return np.asarray(binned_array), np.asarray(binned_err)
+
+
+def compute_binning_time(time_array, bin_size):
+    bin_time = time_array[bin_size] - time_array[0]
+
+    return bin_time  # day
 
 class HandlerCircle(HandlerPatch):
     def create_artists(self, legend, orig_handle,
@@ -56,12 +104,13 @@ class ExoplanetarySystem_phaseoffset:
                  mission="Kepler", 
                  response_nu=None, 
                  response_vals=None, 
-                 cloud_offset=None, 
-                 albedo_min=None,
+                 cloud_offset=0, 
+                 albedo_min=0.5,
                  sigma=40, 
                  distribution="normal",
                  nlon=180,
-                 nlat=90):
+                 nlat=90,
+                 test=False):
 
         self.orbitalperiod = orbitalperiod  # days
         self.effectivetemperature = effectivetemperature  # stellar temperature K
@@ -95,11 +144,13 @@ class ExoplanetarySystem_phaseoffset:
         self.distribution = distribution
         self.nlon = nlon
         self.nlat = nlat
+        self.test = test
 
     def read_response_function(self):
         if self.mission == 'Kepler':
-            response_function_file = os.path.join(references_path, 'Kepler_Response_Function.txt')
-            response_fonction_data = np.loadtxt(response_function_file, skiprows = 8)
+            response_function_file = importlib.resources.files (non_transiting.references) / 'Kepler_Response_Function.txt'
+            response_fonction_data = np.loadtxt(response_function_file, 
+                                                skiprows = 8)
             response_function_values = response_fonction_data[:, 1]
             response_function_wavelength = response_fonction_data[:, 0] * 10**(-3)  # converted into microns
 
@@ -126,7 +177,9 @@ class ExoplanetarySystem_phaseoffset:
         return None
 
     def integrate_with_response_function(self, wavelengths, response, B_lambda):
-        """Integrate the Planck function weighted by the response function."""
+        """
+        Integrate the Planck function weighted by the response function.
+        """
         A = integrate.simpson(y=B_lambda * response, x=wavelengths)
         B = integrate.simpson(y=response, x=wavelengths)
         return A / B
@@ -159,8 +212,8 @@ class ExoplanetarySystem_phaseoffset:
         lat_deg_limits = np.linspace(-90., 90., self.nlat+1)
         lat_deg = (lat_deg_limits[0:self.nlat] + lat_deg_limits[1:self.nlat + 1]) * 0.5
 
-        self.longitudearray = utils.convert_deg_to_radian(lon_deg)  # in radian
-        self.latitudearray = utils.convert_deg_to_radian(lat_deg)  # in radian
+        self.longitudearray = convert_deg_to_radian(lon_deg)  # in radian
+        self.latitudearray = convert_deg_to_radian(lat_deg)  # in radian
 
         self.longitudegrid, self.latitudegrid = np.meshgrid (self.longitudearray, self.latitudearray)
 
@@ -181,7 +234,8 @@ class ExoplanetarySystem_phaseoffset:
             print("Area must be around 1 :", self.area.sum() / (4 * np.pi))
 
     def compute_Planck_law(self, nu_edges, temperature, numberofterms=30):
-        """from exo_k Bnu_integral_num()
+        """
+        From exo_k Bnu_integral_num()
         https://perso.astrophy.u-bordeaux.fr/~jleconte/exo_k-doc/_modules/exo_k/util/radiation.html#Bnu_integral_num
         """
 
@@ -298,7 +352,7 @@ class ExoplanetarySystem_phaseoffset:
         # Compute dimensionless thermal phase
         P = self.compute_thermal_phase(xi, epsilon=self.redistribution, verbose=False)
 
-        if test:
+        if self.test:
             fig, ax = plt.subplots(1, 1, figsize=(7, 4), dpi=100)
             ax.plot(xi * 180 / np.pi, P, color='orange', linewidth=2)
             ax.axvline(0, color='lightgrey', linestyle='--', linewidth=1)
@@ -319,7 +373,7 @@ class ExoplanetarySystem_phaseoffset:
         P_lon = np.interp(lon_0_2pi, xi_sorted, P_sorted)
 
 
-        if test:
+        if self.test:
             fig, ax = plt.subplots(1, 1, figsize=(7, 4), dpi=100)
             ax.plot(self.longitudearray * 180 / np.pi, P_lon, color='orange', linewidth=2)
             ax.axvline(0, color='lightgrey', linestyle='--', linewidth=1)
@@ -339,7 +393,7 @@ class ExoplanetarySystem_phaseoffset:
             self.atmospherictemperature[:, ilon] = ((P_lon[ilon] * T_0  * coslat_1D ** 0.25) ** 4
                                                     + self.internaltemperature ** 4) ** 0.25
 
-        if test:
+        if self.test:
             self.show_atmospheric_temperature_map ()
 
         # get response function
@@ -369,7 +423,7 @@ class ExoplanetarySystem_phaseoffset:
         Istar_band = np.sum(Istar_per_bin)
         ISS_band = Istar_band * np.pi * (self.stellarradius / self.semimajoraxis) ** 2  # added a missing pi
 
-        if test:
+        if self.test:
             fig, ax = plt.subplots(1, 1, figsize=(7, 4), dpi=100)
             ax.plot(self.longitudearray * 180/np.pi, A_lon, color='green', linewidth=2)
             ax.axhline(A_lon[A_lon.shape[0]//2], color='lightpink', linestyle='--', linewidth=1)
@@ -391,7 +445,7 @@ class ExoplanetarySystem_phaseoffset:
         # Total intensity
         self.totalplanetartintensity = self.reflectedplanetartintensity + self.emittedplanetaryintensity
 
-        if test:
+        if self.test:
             self.show_reflection_map ()
 
         if self.checking is True:
@@ -425,8 +479,8 @@ class ExoplanetarySystem_phaseoffset:
         lat_centers = self.latitudearray * 180 / np.pi
 
         # Compute edges
-        lon_edges = utils.compute_edges(lon_centers)
-        lat_edges = utils.compute_edges(lat_centers)
+        lon_edges = compute_edges(lon_centers)
+        lat_edges = compute_edges(lat_centers)
 
         # Create meshgrid of edges
         lons, lats = np.meshgrid(lon_edges, lat_edges)
@@ -495,8 +549,8 @@ class ExoplanetarySystem_phaseoffset:
         lat_centers = self.latitudearray * 180 / np.pi
 
         # Compute edges
-        lon_edges = utils.compute_edges(lon_centers)
-        lat_edges = utils.compute_edges(lat_centers)
+        lon_edges = compute_edges(lon_centers)
+        lat_edges = compute_edges(lat_centers)
 
         # Create meshgrid of edges
         lons, lats = np.meshgrid(lon_edges, lat_edges)
@@ -561,9 +615,9 @@ class ExoplanetarySystem_phaseoffset:
         nlat = len(self.latitudearray)
 
         observedlatitude = 90. - self.inclination
-        observedlatitude = utils.convert_deg_to_radian(observedlatitude)
+        observedlatitude = convert_deg_to_radian(observedlatitude)
 
-        self.phase = utils.convert_deg_to_radian(self.phase)
+        self.phase = convert_deg_to_radian(self.phase)
         nphase = len(self.phase)
 
         fobs = np.zeros(nphase)
@@ -596,7 +650,7 @@ class ExoplanetarySystem_phaseoffset:
                                        * cos_theta[visible])
             fobs_em[iphase] = np.sum(self.emittedplanetaryintensity[visible] * self.area[visible] * cos_theta[visible])
 
-        if test:
+        if self.test:
 
             fig, ax = plt.subplots(1, 1, figsize=(7, 4), dpi=100)
             ax.plot(self.phase * 180 / np.pi, fobs_em, color='orange',
@@ -651,7 +705,7 @@ class ExoplanetarySystem_phaseoffset:
         # Only reflected contrast
         self.contrast_ppm_refl = (fobs_refl * 1.e6 / Fstar_band) * (self.planetaryradius / self.stellarradius) ** 2
 
-        if test:
+        if self.test:
             fig, ax = plt.subplots(1, 1, figsize=(7, 4), dpi=100)
             ax.plot(self.phase * 180 / np.pi,
                     self.contrast_ppm_refl, color='lightblue', 
@@ -682,9 +736,42 @@ class ExoplanetarySystem_phaseoffset:
         contrast = self.compute_contrast(reflection_method=reflection_method)
 
         return contrast
+    
+    def plot_model(self):
+        """
+        A simple plotting function to compare reflection, emission,
+        and composite phase curve.
+        """
+        fig, ax = plt.subplots(1, 1, figsize=(5, 4), dpi=100)
+
+        ax.axvline(0, -10, 70, color='lightgrey', linestyle='--', linewidth=0.7, zorder=1)
+        ax.axvline(90, -10, 70, color='lightgrey', linestyle='--', linewidth=0.7, zorder=1)
+        ax.axvline(180, -10, 70, color='lightgrey', linestyle='--', linewidth=0.7, zorder=1)
+        ax.axvline(270, -10, 70, color='lightgrey', linestyle='--', linewidth=0.7, zorder=1)
+        ax.axvline(360, -10, 70, color='lightgrey', linestyle='--', linewidth=0.7, zorder=1)
+        ax.plot(self.phase * 180 / np.pi, 
+                self.contrast_ppm, 
+                linewidth=0.8, linestyle='-',
+                color="blue")
+        ax.plot(self.phase * 180 / np.pi, 
+                self.contrast_ppm_refl, 
+                linewidth=0.8, linestyle='--',
+                color="darkorange")
+        ax.plot(self.phase * 180 / np.pi, 
+                self.contrast_ppm_em, 
+                linewidth=0.8, linestyle='--',
+                color="gold")
+
+        xticks = [0, 90, 180, 270, 360]
+        xlabels = [f'{x}°' for x in xticks]
+        #xlabels = [0, 0.25, 0.5, 0.75, 1]
+        ax.set_xticks(xticks, labels=xlabels)
+        ax.set_xlabel('Phase')
+        ax.set_ylabel('Amplitude [ppm]')
+        return fig
 
 
-if test:
+if __name__=="__main__":
     #  Test
     def run_model():
         #  inputs
@@ -727,6 +814,5 @@ if test:
                                                              albedo_min = albedo_min)
 
         return punto_system.compute_flux()
-
     run_model()
 
