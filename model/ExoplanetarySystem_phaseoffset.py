@@ -14,14 +14,51 @@ colors_matter = cm.cm.matter_r(np.linspace(0, 1, 10))
 
 test = False
 
+class HandlerCircle(HandlerPatch):
+    def create_artists(self, legend, orig_handle,
+                       xdescent, ydescent, width, height, fontsize, trans):
+        # Create a circle at the center of the legend box
+        center = (xdescent + width / 2., ydescent + height / 2.)
+        p = Circle(center, radius=min(width, height) / 2)
+        self.update_prop(p, orig_handle, legend)
+        p.set_transform(trans)
+        return [p]
+
 
 class ExoplanetarySystem_phaseoffset:
-    def __init__(self, orbitalperiod,
-                 effectivetemperature, stellarmass, stellarradius, semimajoraxis, planetaryradius, planetarymass,
-                 inclination, redistribution, albedo, wavearray, longitudearray, latitudearray, checking,
-                 internaltemperature, area, phase, atmospherictemperature,
-                 totalplanetartintensity, emittedplanetaryintensity, reflectedplanetartintensity,
-                 contrast_ppm, contrast_ppm_refl, mission, response_nu, response_vals, cloud_offset, albedo_min):
+    def __init__(self, 
+                 phase, 
+                 orbitalperiod=1,
+                 effectivetemperature=5770, 
+                 stellarmass=1, 
+                 stellarradius=1, 
+                 semimajoraxis=1, 
+                 planetaryradius=1, 
+                 planetarymass=1,
+                 inclination=45, 
+                 redistribution=0, 
+                 albedo=0.5, 
+                 wavearray=None, 
+                 longitudearray=None, 
+                 latitudearray=None, 
+                 checking=False,
+                 internaltemperature=100, 
+                 area=None, 
+                 atmospherictemperature=None,
+                 totalplanetartintensity=None, 
+                 emittedplanetaryintensity=None, 
+                 reflectedplanetartintensity=None,
+                 contrast_ppm=None, 
+                 contrast_ppm_refl=None, 
+                 mission="Kepler", 
+                 response_nu=None, 
+                 response_vals=None, 
+                 cloud_offset=None, 
+                 albedo_min=None,
+                 sigma=40, 
+                 distribution="normal",
+                 nlon=180,
+                 nlat=90):
 
         self.orbitalperiod = orbitalperiod  # days
         self.effectivetemperature = effectivetemperature  # stellar temperature K
@@ -51,10 +88,14 @@ class ExoplanetarySystem_phaseoffset:
         self.response_vals = response_vals
         self.cloud_offset = cloud_offset
         self.albedo_min = albedo_min
+        self.sigma = sigma
+        self.distribution = distribution
+        self.nlon = nlon
+        self.nlat = nlat
 
     def read_response_function(self):
         if self.mission == 'Kepler':
-            response_function_file = '/Users/adyrek/PycharmProjects/punto/references/Kepler_Response_Function.txt'
+            response_function_file = '../references/Kepler_Response_Function.txt'
             response_fonction_data = np.loadtxt(response_function_file, skiprows = 8)
             response_function_values = response_fonction_data[:, 1]
             response_function_wavelength = response_fonction_data[:, 0] * 10**(-3)  # converted into microns
@@ -107,18 +148,18 @@ class ExoplanetarySystem_phaseoffset:
         return self.semimajoraxis
 
     def compute_longitude_latitude(self):
-        # Sphere discretisation
-
-        numberoflongitude = 180
-        numberoflatitude = 90
-
-        lon_deg_limits = np.linspace(-180., 180., numberoflongitude + 1)
-        lon_deg = (lon_deg_limits[0:numberoflongitude] + lon_deg_limits[1:numberoflongitude + 1]) * 0.5
-        lat_deg_limits = np.linspace(-90., 90., numberoflatitude + 1)
-        lat_deg = (lat_deg_limits[0:numberoflatitude] + lat_deg_limits[1:numberoflatitude + 1]) * 0.5
+        """
+        Sphere discretisation.
+        """
+        lon_deg_limits = np.linspace(-180., 180., self.nlon+1)
+        lon_deg = (lon_deg_limits[0:self.nlon] + lon_deg_limits[1:self.nlon + 1]) * 0.5
+        lat_deg_limits = np.linspace(-90., 90., self.nlat+1)
+        lat_deg = (lat_deg_limits[0:self.nlat] + lat_deg_limits[1:self.nlat + 1]) * 0.5
 
         self.longitudearray = utils.convert_deg_to_radian(lon_deg)  # in radian
         self.latitudearray = utils.convert_deg_to_radian(lat_deg)  # in radian
+
+        self.longitudegrid, self.latitudegrid = np.meshgrid (self.longitudearray, self.latitudearray)
 
     def check_area(self):
         self.area = np.zeros((len(self.latitudearray), len(self.longitudearray)))
@@ -207,16 +248,24 @@ class ExoplanetarySystem_phaseoffset:
             print(result.success)
         return result.y[0]
 
-    def albedo_map(self, lon_array):
+    def albedo_map(self, lon_array, sigma=40,
+                   distribution="normal"):
         A_max = self.albedo  # from grid
         A_min = self.albedo_min  # from Webber+, 2015, figure 5
         theta_c = np.radians(self.cloud_offset)  # cloud offset
-        sigma = np.radians(40)  # cloud width
+        sigma = np.radians(sigma)  # cloud width
+        if distribution=="normal" :
+            delta = (lon_array + theta_c + np.pi) % (2 * np.pi) - np.pi
+            A_lon = A_min + (A_max - A_min) * np.exp(-delta ** 2 / (2 * sigma ** 2))
+        if distribution=="discontinuous" :
+            A_lon = np.full (lon_array.size, A_min)
+            # Adding clouds on the western terminator
+            A_lon[(lon_array>=-np.pi/2)&(lon_array<=-np.pi/2+sigma)] = A_max
+        elif distribution=="exp_decay" :
+            raise Exception ("Option exp decay is not implemented yet.")
+        return A_lon
 
-        delta = (lon_array + theta_c + np.pi) % (2 * np.pi) - np.pi
-        return A_min + (A_max - A_min) * np.exp(-delta ** 2 / (2 * sigma ** 2))
-
-    def compute_temperature_and_intensity(self):
+    def compute_temperature_and_intensity(self, reflection_method="map"):
 
         numberoflongitude = len(self.longitudearray)
         numberoflatitude = len(self.latitudearray)
@@ -232,7 +281,8 @@ class ExoplanetarySystem_phaseoffset:
         coszen[coszen < 0.] = 0.
 
         # albedo
-        A_lon = self.albedo_map(self.longitudearray)
+        A_lon = self.albedo_map(self.longitudearray, self.sigma,
+                                distribution=self.distribution)
 
         # Internal flux
         if self.internaltemperature is None:
@@ -287,80 +337,7 @@ class ExoplanetarySystem_phaseoffset:
                                                     + self.internaltemperature ** 4) ** 0.25
 
         if test:
-            class HandlerCircle(HandlerPatch):
-                def create_artists(self, legend, orig_handle,
-                                   xdescent, ydescent, width, height, fontsize, trans):
-                    # Create a circle at the center of the legend box
-                    center = (xdescent + width / 2., ydescent + height / 2.)
-                    p = Circle(center, radius=min(width, height) / 2)
-                    self.update_prop(p, orig_handle, legend)
-                    p.set_transform(trans)
-                    return [p]
-
-            m = Basemap(projection='mbtfpq', lon_0=0, resolution='c')
-            # draw parallels and meridians.
-            m.drawparallels(np.arange(-90., 120., 20.))
-            m.drawmeridians(np.arange(0., 360., 20.))
-            m.drawmapboundary(fill_color='white')
-
-            # Convert longitude and latitude to degrees
-            lon_centers = self.longitudearray * 180 / np.pi
-            lat_centers = self.latitudearray * 180 / np.pi
-
-            # Compute edges
-            lon_edges = utils.compute_edges(lon_centers)
-            lat_edges = utils.compute_edges(lat_centers)
-
-            # Create meshgrid of edges
-            lons, lats = np.meshgrid(lon_edges, lat_edges)
-
-            im1 = m.pcolormesh(lons, lats, self.atmospherictemperature, cmap=cm.cm.matter_r, latlon=True, shading='auto')
-            cb = m.colorbar(im1, "bottom", size="5%", pad="2%")
-            cb.set_label(r'$T_{\mathrm{atm}}$ [K]')
-
-            lon_labels = [lon_edges[0], lon_edges[len(lon_edges) // 2], lon_edges[-1]]
-            for lon in lon_labels:
-                x, y = m(lon, lat_edges[-1])  # top edge
-                plt.text(x, y + 0.02 * (m.urcrnrx - m.llcrnrx), f"{lon:.0f}°",
-                         ha='center', va='bottom', fontsize=10)
-
-            plt.text(0.5, 1.15, "Longitude", transform=plt.gca().transAxes,
-                     ha='center', va='bottom', fontsize=12)
-
-            # substellar point
-            x0, y0 = m(0, 0)
-            substellar_circle = Circle((x0, y0), radius=0.01 * (m.urcrnrx - m.llcrnrx),
-                                       facecolor='cyan', edgecolor='black', linewidth=0.5, label='Substellar point', zorder=5)
-            plt.gca().add_patch(substellar_circle)
-
-            # temperature maximum
-            max_idx = np.unravel_index(np.argmax(self.atmospherictemperature), self.atmospherictemperature.shape)
-            max_lon = lon_centers[max_idx[1]]  # longitude of max temperature
-            max_lat = lat_centers[max_idx[0]]  # latitude of max temperature
-            x_max, y_max = m(max_lon, max_lat)
-            max_circle = Circle((x_max, y_max), radius=0.01 * (m.urcrnrx - m.llcrnrx),
-                                facecolor='red', edgecolor='black', linewidth=0.5, label=r'$T_{\rm max}$', zorder=5)
-            plt.gca().add_patch(max_circle)
-
-            plt.annotate(
-                "West", xy=(0.25, 0.9), xycoords='axes fraction',  # position (10% from left, just above plot)
-                xytext=(0.3, 0.9), textcoords='axes fraction',  # text slightly to the right of arrow
-                ha='left', va='center', fontsize=9, color='white', fontfamily='sans-serif',
-                arrowprops=dict(arrowstyle='->', color='white', lw=1, shrinkA=0, shrinkB=0)
-            )
-
-            plt.annotate(
-                "East", xy=(0.75, 0.9), xycoords='axes fraction',  # position (10% from left, just above plot)
-                xytext=(0.65, 0.9), textcoords='axes fraction',  # text slightly to the right of arrow
-                ha='left', va='center', fontsize=9, color='white', fontfamily='sans-serif',
-                arrowprops=dict(arrowstyle='->', color='white', lw=1, shrinkA=0, shrinkB=0)
-            )
-
-
-            plt.legend(handles=[substellar_circle, max_circle], loc='upper right',
-                       bbox_to_anchor=(1.03, 1.1), fontsize=7, handler_map={Circle: HandlerCircle()})
-
-            plt.show()
+            self.show_atmospheric_temperature_map ()
 
         # get response function
         self.read_response_function()
@@ -401,88 +378,18 @@ class ExoplanetarySystem_phaseoffset:
             plt.show()
 
         A_grid = np.tile(A_lon, (len(self.latitudearray), 1))
-        self.reflectedplanetartintensity[:, :] = coszen[:, :] * A_grid * ISS_band
+        if reflection_method=="map" :
+            self.reflectedplanetartintensity = coszen * A_grid * ISS_band
+        elif reflection_method=="global" :
+            self.reflectedplanetartintensity = self.albedo * ISS_band * np.maximum (0, np.cos (self.longitudegrid+np.radians (self.cloud_offset)))
 
-        self.emittedplanetaryintensity = Iemis[:, :]
+        self.emittedplanetaryintensity = Iemis
 
         # Total intensity
-        self.totalplanetartintensity[:, :] = self.reflectedplanetartintensity[:, :] + self.emittedplanetaryintensity
+        self.totalplanetartintensity = self.reflectedplanetartintensity + self.emittedplanetaryintensity
 
         if test:
-            class HandlerCircle(HandlerPatch):
-                def create_artists(self, legend, orig_handle,
-                                   xdescent, ydescent, width, height, fontsize, trans):
-                    # Create a circle at the center of the legend box
-                    center = (xdescent + width / 2., ydescent + height / 2.)
-                    p = Circle(center, radius=min(width, height) / 2)
-                    self.update_prop(p, orig_handle, legend)
-                    p.set_transform(trans)
-                    return [p]
-
-            m = Basemap(projection='mbtfpq', lon_0=0, resolution='c')
-            # draw parallels and meridians.
-            m.drawparallels(np.arange(-90., 120., 20.))
-            m.drawmeridians(np.arange(0., 360., 20.))
-            m.drawmapboundary(fill_color='white')
-
-            # Convert longitude and latitude to degrees
-            lon_centers = self.longitudearray * 180 / np.pi
-            lat_centers = self.latitudearray * 180 / np.pi
-
-            # Compute edges
-            lon_edges = utils.compute_edges(lon_centers)
-            lat_edges = utils.compute_edges(lat_centers)
-
-            # Create meshgrid of edges
-            lons, lats = np.meshgrid(lon_edges, lat_edges)
-
-            im1 = m.pcolormesh(lons, lats, self.reflectedplanetartintensity, cmap=cm.cm.matter_r, latlon=True, shading='auto')
-            cb = m.colorbar(im1, "bottom", size="5%", pad="2%")
-            cb.set_label(r'Reflected radiance $\mathcal{I}_{\rm refl}$ [W m$^2$ sr$^{-1}$]')
-
-            lon_labels = [lon_edges[0], lon_edges[len(lon_edges) // 2], lon_edges[-1]]
-            for lon in lon_labels:
-                x, y = m(lon, lat_edges[-1])  # top edge
-                plt.text(x, y + 0.02 * (m.urcrnrx - m.llcrnrx), f"{lon:.0f}°",
-                         ha='center', va='bottom', fontsize=10)
-
-            plt.text(0.5, 1.15, "Longitude", transform=plt.gca().transAxes,
-                     ha='center', va='bottom', fontsize=12)
-
-            plt.annotate(
-                "West", xy=(0.25, 0.9), xycoords='axes fraction',  # position (10% from left, just above plot)
-                xytext=(0.3, 0.9), textcoords='axes fraction',  # text slightly to the right of arrow
-                ha='left', va='center', fontsize=9, color='white', fontfamily='sans-serif',
-                arrowprops=dict(arrowstyle='->', color='white', lw=1, shrinkA=0, shrinkB=0)
-            )
-
-            plt.annotate(
-                "East", xy=(0.75, 0.9), xycoords='axes fraction',  # position (10% from left, just above plot)
-                xytext=(0.65, 0.9), textcoords='axes fraction',  # text slightly to the right of arrow
-                ha='left', va='center', fontsize=9, color='white', fontfamily='sans-serif',
-                arrowprops=dict(arrowstyle='->', color='white', lw=1, shrinkA=0, shrinkB=0)
-            )
-
-            # substellar point
-            x0, y0 = m(0, 0)
-            substellar_circle = Circle((x0, y0), radius=0.01 * (m.urcrnrx - m.llcrnrx),
-                                       facecolor='cyan', edgecolor='black', linewidth=0.5, label='Substellar point',
-                                       zorder=5)
-            plt.gca().add_patch(substellar_circle)
-
-            # temperature maximum
-            max_idx = np.unravel_index(np.argmax(self.reflectedplanetartintensity), self.reflectedplanetartintensity.shape)
-            max_lon = lon_centers[max_idx[1]]
-            max_lat = lat_centers[max_idx[0]]
-            x_max, y_max = m(max_lon, max_lat)
-            max_circle = Circle((x_max, y_max), radius=0.01 * (m.urcrnrx - m.llcrnrx),
-                                facecolor='red', edgecolor='black', linewidth=0.5, label=r'$\mathcal{I}_{\rm{refl}, \rm{max}}$', zorder=5)
-            plt.gca().add_patch(max_circle)
-
-            plt.legend(handles=[substellar_circle, max_circle], loc='upper right',
-                       bbox_to_anchor=(1.03, 1.1), fontsize=7, handler_map={Circle: HandlerCircle()})
-
-            plt.show()
+            self.show_reflection_map ()
 
         if self.checking is True:
             # Radiance of specific intensity
@@ -498,6 +405,152 @@ class ExoplanetarySystem_phaseoffset:
                   f' self.area * self.planetaryradius ** 2) in W.')
             total_rad = np.sum(self.totalplanetartintensity[:, :] * self.area[:, :]) * (self.planetaryradius ** 2)
             print(f'Total power: {total_rad} W.')
+
+    def show_atmospheric_temperature_map (self) :
+        """
+        Show map of atmospheric temperature.
+        """
+        fig = plt.figure ()
+        m = Basemap(projection='mbtfpq', lon_0=0, resolution='c')
+        # draw parallels and meridians.
+        m.drawparallels(np.arange(-90., 120., 20.))
+        m.drawmeridians(np.arange(0., 360., 20.))
+        m.drawmapboundary(fill_color='white')
+
+        # Convert longitude and latitude to degrees
+        lon_centers = self.longitudearray * 180 / np.pi
+        lat_centers = self.latitudearray * 180 / np.pi
+
+        # Compute edges
+        lon_edges = utils.compute_edges(lon_centers)
+        lat_edges = utils.compute_edges(lat_centers)
+
+        # Create meshgrid of edges
+        lons, lats = np.meshgrid(lon_edges, lat_edges)
+
+        im1 = m.pcolormesh(lons, lats, self.atmospherictemperature, cmap=cm.cm.matter_r, latlon=True, shading='auto')
+        cb = m.colorbar(im1, "bottom", size="5%", pad="2%")
+        cb.set_label(r'$T_{\mathrm{atm}}$ [K]')
+
+        lon_labels = [lon_edges[0], lon_edges[len(lon_edges) // 2], lon_edges[-1]]
+        for lon in lon_labels:
+            x, y = m(lon, lat_edges[-1])  # top edge
+            plt.text(x, y + 0.02 * (m.urcrnrx - m.llcrnrx), f"{lon:.0f}°",
+                     ha='center', va='bottom', fontsize=10)
+
+        plt.text(0.5, 1.15, "Longitude", transform=plt.gca().transAxes,
+                 ha='center', va='bottom', fontsize=12)
+
+        # substellar point
+        x0, y0 = m(0, 0)
+        substellar_circle = Circle((x0, y0), radius=0.01 * (m.urcrnrx - m.llcrnrx),
+                                   facecolor='cyan', edgecolor='black', linewidth=0.5, label='Substellar point', zorder=5)
+        plt.gca().add_patch(substellar_circle)
+
+        # temperature maximum
+        max_idx = np.unravel_index(np.argmax(self.atmospherictemperature), self.atmospherictemperature.shape)
+        max_lon = lon_centers[max_idx[1]]  # longitude of max temperature
+        max_lat = lat_centers[max_idx[0]]  # latitude of max temperature
+        x_max, y_max = m(max_lon, max_lat)
+        max_circle = Circle((x_max, y_max), radius=0.01 * (m.urcrnrx - m.llcrnrx),
+                            facecolor='red', edgecolor='black', linewidth=0.5, label=r'$T_{\rm max}$', zorder=5)
+        plt.gca().add_patch(max_circle)
+
+        plt.annotate(
+            "West", xy=(0.25, 0.9), xycoords='axes fraction',  # position (10% from left, just above plot)
+            xytext=(0.3, 0.9), textcoords='axes fraction',  # text slightly to the right of arrow
+            ha='left', va='center', fontsize=9, color='white', fontfamily='sans-serif',
+            arrowprops=dict(arrowstyle='->', color='white', lw=1, shrinkA=0, shrinkB=0)
+        )
+
+        plt.annotate(
+            "East", xy=(0.75, 0.9), xycoords='axes fraction',  # position (10% from left, just above plot)
+            xytext=(0.65, 0.9), textcoords='axes fraction',  # text slightly to the right of arrow
+            ha='left', va='center', fontsize=9, color='white', fontfamily='sans-serif',
+            arrowprops=dict(arrowstyle='->', color='white', lw=1, shrinkA=0, shrinkB=0)
+        )
+
+
+        plt.legend(handles=[substellar_circle, max_circle], loc='upper right',
+                   bbox_to_anchor=(1.03, 1.1), fontsize=7, handler_map={Circle: HandlerCircle()})
+        return fig
+
+
+    def show_reflection_map (self) :
+        """
+        Compute reflection map.
+        """
+        fig = plt.figure ()
+        m = Basemap(projection='mbtfpq', lon_0=0, resolution='c')
+        # draw parallels and meridians.
+        m.drawparallels(np.arange(-90., 120., 20.))
+        m.drawmeridians(np.arange(0., 360., 20.))
+        m.drawmapboundary(fill_color='white')
+
+        # Convert longitude and latitude to degrees
+        lon_centers = self.longitudearray * 180 / np.pi
+        lat_centers = self.latitudearray * 180 / np.pi
+
+        # Compute edges
+        lon_edges = utils.compute_edges(lon_centers)
+        lat_edges = utils.compute_edges(lat_centers)
+
+        # Create meshgrid of edges
+        lons, lats = np.meshgrid(lon_edges, lat_edges)
+
+        im1 = m.pcolormesh(lons, lats, self.reflectedplanetartintensity, 
+                           cmap=cm.cm.matter_r, 
+                           latlon=True, 
+                           shading='auto')
+        cb = m.colorbar(im1, "bottom", size="5%", pad="2%")
+        cb.set_label(r'Reflected radiance $\mathcal{I}_{\rm refl}$ [W m$^2$ sr$^{-1}$]')
+
+        lon_labels = [lon_edges[0], lon_edges[len(lon_edges) // 2], lon_edges[-1]]
+        for lon in lon_labels:
+            x, y = m(lon, lat_edges[-1])  # top edge
+            plt.text(x, y + 0.02 * (m.urcrnrx - m.llcrnrx), f"{lon:.0f}°",
+                     ha='center', va='bottom', fontsize=10)
+
+        plt.text(0.5, 1.15, "Longitude", transform=plt.gca().transAxes,
+                 ha='center', va='bottom', fontsize=12)
+
+        plt.annotate(
+            "West", xy=(0.25, 0.9), xycoords='axes fraction',  # position (10% from left, just above plot)
+            xytext=(0.3, 0.9), textcoords='axes fraction',  # text slightly to the right of arrow
+            ha='left', va='center', fontsize=9, color='white', fontfamily='sans-serif',
+            arrowprops=dict(arrowstyle='->', color='white', lw=1, shrinkA=0, shrinkB=0)
+        )
+
+        plt.annotate(
+            "East", xy=(0.75, 0.9), xycoords='axes fraction',  # position (10% from left, just above plot)
+            xytext=(0.65, 0.9), textcoords='axes fraction',  # text slightly to the right of arrow
+            ha='left', va='center', fontsize=9, color='white', fontfamily='sans-serif',
+            arrowprops=dict(arrowstyle='->', color='white', lw=1, shrinkA=0, shrinkB=0)
+        )
+
+        # substellar point
+        x0, y0 = m(0, 0)
+        substellar_circle = Circle((x0, y0), radius=0.01 * (m.urcrnrx - m.llcrnrx),
+                                   facecolor='cyan', edgecolor='black', 
+                                   linewidth=0.5, 
+                                   label='Substellar point',
+                                   zorder=5)
+        plt.gca().add_patch(substellar_circle)
+
+        # temperature maximum
+        max_idx = np.unravel_index(np.argmax(self.reflectedplanetartintensity), 
+                                   self.reflectedplanetartintensity.shape)
+        max_lon = lon_centers[max_idx[1]]
+        max_lat = lat_centers[max_idx[0]]
+        x_max, y_max = m(max_lon, max_lat)
+        max_circle = Circle((x_max, y_max), radius=0.01 * (m.urcrnrx - m.llcrnrx),
+                            facecolor='red', edgecolor='black', 
+                            linewidth=0.5, label=r'$\mathcal{I}_{\rm{refl}, \rm{max}}$', zorder=5)
+        plt.gca().add_patch(max_circle)
+
+        plt.legend(handles=[substellar_circle, max_circle], loc='upper right',
+                   bbox_to_anchor=(1.03, 1.1), fontsize=7, handler_map={Circle: HandlerCircle()})
+        return fig
 
     def compute_phasecurve(self):
 
@@ -558,14 +611,14 @@ class ExoplanetarySystem_phaseoffset:
 
         return fobs, fobs_refl, fobs_em
 
-    def compute_contrast(self):
+    def compute_contrast(self, reflection_method="map"):
         # Reflected and emitted light computation
         nphase = len(self.phase)
         self.contrast_ppm = np.zeros(nphase)
         self.contrast_ppm_refl = np.zeros(nphase)
-        contrast_ppm_em = np.zeros(nphase)
+        self.contrast_ppm_em = np.zeros(nphase)
 
-        self.compute_temperature_and_intensity()
+        self.compute_temperature_and_intensity(reflection_method=reflection_method)
 
         fobs, fobs_refl, fem = self.compute_phasecurve()
 
@@ -591,18 +644,21 @@ class ExoplanetarySystem_phaseoffset:
         self.contrast_ppm = (fobs * 1.e6 / Fstar_band) * \
                                             (self.planetaryradius / self.stellarradius) ** 2
 
-        contrast_ppm_em = (fem * 1.e6 / Fstar_band) * (self.planetaryradius / self.stellarradius) ** 2
+        self.contrast_ppm_em = (fem * 1.e6 / Fstar_band) * (self.planetaryradius / self.stellarradius) ** 2
         # Only reflected contrast
         self.contrast_ppm_refl = (fobs_refl * 1.e6 / Fstar_band) * (self.planetaryradius / self.stellarradius) ** 2
 
         if test:
             fig, ax = plt.subplots(1, 1, figsize=(7, 4), dpi=100)
             ax.plot(self.phase * 180 / np.pi,
-                    self.contrast_ppm_refl, color='lightblue', linewidth=2, label='Reflection')
+                    self.contrast_ppm_refl, color='lightblue', 
+                    linewidth=2, label='Reflection')
             ax.plot(self.phase * 180 / np.pi,
-                    self.contrast_ppm, color='pink', linewidth=2, label='Composite')
+                    self.contrast_ppm, color='pink', 
+                    linewidth=2, label='Composite')
             ax.plot(self.phase * 180 / np.pi,
-                    contrast_ppm_em, color='green', linewidth=2, label='Emission')
+                    contrast_ppm_em, color='green', 
+                    linewidth=2, label='Emission')
             ax.axvline(180, color='lightgrey', linestyle='--', linewidth=1)
             ax.set_xlabel(r'Phase [$^{\circ}$]')
             ax.set_ylabel(r'Planet-star contrast $F_p / F_{\star} \times 10^6$ [ppm]')
@@ -613,14 +669,14 @@ class ExoplanetarySystem_phaseoffset:
 
         return self.contrast_ppm
 
-    def compute_flux(self):
+    def compute_flux(self, reflection_method="map"):
         self.convert_mu_to_cm()
         self.convert_orbital_parameters()
         self.compute_semi_major_axis()
         self.compute_longitude_latitude()
         self.check_area()
 
-        contrast = self.compute_contrast()
+        contrast = self.compute_contrast(reflection_method=reflection_method)
 
         # plots.plot_temperature_map(self)
         # contrast_for_plotting = contrast[np.newaxis, np.newaxis, np.newaxis, :]
