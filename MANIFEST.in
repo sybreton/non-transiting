@@ -1,3 +1,1 @@
-include src/non-transiting/references/9139163_lc_filtered.txt
-include src/non-transiting/references/Kepler_Response_Function.txt
-include src/non-transiting/references/t0_estimation.csv
+include src/non_transiting/references/Kepler_Response_Function.txt
