@@ -90,7 +90,7 @@ if create_grid:
 
     # creating the grid of model
     def run_model(planetaryradius, albedo, redistribution, inclination, albedo_min, cloud_offset):
-        punto_system = ExoplanetarySystem_phaseoffset.ExoplanetarySystem_phaseoffset(orbitalperiod=period,
+        punto_system = ExoplanetarySystem_phaseoffset(orbitalperiod=period,
                                                       effectivetemperature=effectivetemperature,
                                                       stellarmass=stellarmass,
                                                       stellarradius=stellarradius,
